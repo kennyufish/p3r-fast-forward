@@ -1,0 +1,156 @@
+"""Execute the actual Lua entry point against a small UE4SS boundary mock.
+Requires lupa (test-only). This is NOT Unreal runtime acceptance.
+"""
+from pathlib import Path
+import sys
+import unittest
+from lupa.lua54 import LuaRuntime
+
+SOURCE = Path(sys.argv.pop(1)) if len(sys.argv) > 1 and sys.argv[1].endswith('.lua') else Path(__file__).parents[1] / 'Mods/P3R_FastForward/Scripts/main.lua'
+HARNESS = r'''
+logs, queue, keys, loops = {}, {}, {}, {}
+onGameThread, missingWorld, rejectWrite, rejectSchedule = false, false, false, false
+viewportAvailable = false
+world = {rate=1.0, address=100, name="World A"}
+function world:IsValid() return true end
+function world:GetAddress() return self.address end
+function world:GetFullName() return self.name end
+viewport = {}
+function viewport:IsValid() return true end
+function viewport:GetWorld() assert(onGameThread); return world end
+function FindFirstOf(name)
+    assert(onGameThread)
+    if name == 'GameViewportClient' and viewportAvailable then return viewport end
+end
+statics = {valid=true, writes=0}
+function statics:IsValid() return self.valid end
+function statics:GetGlobalTimeDilation(w) assert(onGameThread); return w.rate end
+function statics:SetGlobalTimeDilation(w, rate)
+    assert(onGameThread); self.writes = self.writes + 1
+    if not rejectWrite then w.rate = rate end
+end
+package.preload.UEHelpers = function() return {GetWorld=function()
+    assert(onGameThread)
+    if missingWorld then error("no controller") end
+    return world
+end} end
+function print(s) table.insert(logs, s) end
+function RegisterBeginPlayPostHook(cb) beginPlay = cb end
+apoText = nil
+io.open = function() return {write=function(_, s) apoText = s end, close=function() end} end
+Key = {F6=117}
+function StaticFindObject() assert(onGameThread); return statics end
+function IsKeyBindRegistered(k) return keys[k] ~= nil end
+function RegisterKeyBind(k, cb) assert(not keys[k]); keys[k] = cb end
+function LoopAsync(delay, cb) assert(delay == 500); table.insert(loops, cb) end
+function ExecuteInGameThread(cb)
+    if rejectSchedule then error("scheduler unavailable") end
+    table.insert(queue, cb)
+end
+function drain()
+    local pending = queue; queue = {}; onGameThread = true
+    for _, cb in ipairs(pending) do cb() end
+    onGameThread = false
+end
+function press() keys[Key.F6]() end
+components = {}
+function makeComponent(pitch)
+    local c = {PitchMultiplier=pitch or 1.0, sets=0, alive=true}
+    function c:IsValid() return self.alive end
+    function c:SetPitchMultiplier(r) assert(onGameThread); self.sets = self.sets + 1; self.PitchMultiplier = r end
+    table.insert(components, c); return c
+end
+function FindAllOf(name) assert(onGameThread); assert(name == 'AtomComponent'); return components end
+function tick() for _, cb in ipairs(loops) do cb() end; drain() end
+function hasLog(s) for _, line in ipairs(logs) do if line:find(s,1,true) then return true end end; return false end
+'''
+
+class Gameplay(unittest.TestCase):
+    def setUp(self):
+        self.lua = LuaRuntime()
+        self.lua.execute(HARNESS)
+        self.source = SOURCE.read_text(encoding='utf-8-sig')
+        self.lua.execute(self.source)
+
+    def run_lua(self, code):
+        self.lua.execute(code)
+
+    def test_supported_scheduler_and_toggle(self):
+        self.run_lua('assert(#loops == 1); assert(statics.writes == 0); press(); assert(world.rate == 1); drain(); assert(world.rate == 1.5); press(); drain(); assert(world.rate == 2.0); press(); drain(); assert(world.rate == 5.0); press(); drain(); assert(world.rate == 1)')
+
+    def test_rapid_parity_and_bounded_dispatch(self):
+        self.run_lua('for i=1,100 do press() end; assert(#queue == 1); drain(); assert(world.rate == 1); press(); drain(); assert(world.rate == 1.5)')
+
+    def test_loading_retains_fast_and_restore(self):
+        self.run_lua('missingWorld=true; press(); drain(); missingWorld=false; tick(); assert(world.rate == 1.5); missingWorld=true; press(); press(); press(); drain(); missingWorld=false; tick(); assert(world.rate == 1)')
+
+    def test_viewport_world_without_possessed_pawn(self):
+        self.run_lua('missingWorld=true; viewportAvailable=true; press(); drain(); assert(world.rate == 1.5)')
+
+    def test_travel_same_name_new_address_and_reset(self):
+        self.run_lua('press(); drain(); world.address=200; world.rate=1; tick(); assert(world.rate == 1.5); world.rate=1; tick(); assert(world.rate == 1.5)')
+
+    def test_preserves_cinematic_and_idle_normal(self):
+        self.run_lua('world.rate=0.5; tick(); assert(world.rate == 0.5); world.rate=1; press(); drain(); world.rate=0.2; tick(); assert(world.rate == 0.2); world.rate=1; tick(); assert(world.rate == 1.5); press(); drain(); world.rate=0.7; tick(); assert(world.rate == 0.7)')
+
+    def test_failed_setter_is_not_success(self):
+        self.run_lua('rejectWrite=true; press(); drain(); assert(world.rate == 1); assert(hasLog("readback mismatch")); rejectWrite=false; tick(); assert(world.rate == 1.5)')
+
+    def test_schedule_failure_retries(self):
+        self.run_lua('rejectSchedule=true; press(); rejectSchedule=false; tick(); assert(world.rate == 1.5)')
+
+    def test_duplicate_entry_no_new_callbacks(self):
+        self.lua.execute(self.source)
+        self.run_lua('assert(#loops == 1); press(); drain(); assert(world.rate == 1.5)')
+
+    def test_waiting_logs_do_not_spam(self):
+        self.run_lua('missingWorld=true; press(); drain(); local count=#logs; for i=1,100 do tick() end; assert(#logs == count)')
+
+    def test_audio_pitch_follows_rate_and_restores(self):
+        self.run_lua('''
+            local a, b = makeComponent(), makeComponent()
+            b.alive = false
+            press(); drain(); assert(a.PitchMultiplier == 1.5); assert(b.PitchMultiplier == 1.0)
+            local n = a.sets; tick(); assert(a.sets == n)
+            local c = makeComponent(); tick(); assert(c.PitchMultiplier == 1.5)
+            press(); drain(); assert(a.PitchMultiplier == 2.0 and c.PitchMultiplier == 2.0)
+            press(); drain(); assert(a.PitchMultiplier == 5.0 and c.PitchMultiplier == 5.0)
+            press(); drain(); assert(a.PitchMultiplier == 1.0 and c.PitchMultiplier == 1.0)
+            assert(hasLog("Audio limit MaxPitch="))
+        ''')
+
+    def test_apo_off_by_default_writes_nothing(self):
+        self.run_lua('press(); drain(); assert(world.rate == 1.5); assert(apoText == nil); assert(hasLog("APO Pitchproof off"))')
+
+    def test_apo_pitch_file_follows_f6(self):
+        self.lua = LuaRuntime()
+        self.lua.execute(HARNESS)
+        self.lua.execute(self.source.replace('local APO_ENABLED = false', 'local APO_ENABLED = true', 1))
+        self.run_lua('''
+            assert(apoText:find("^#"))
+            press(); assert(apoText:find("MC44MzMs", 1, true))
+            press(); assert(apoText:find("MS4wMDAsMC41MDAsMS4w", 1, true))
+            press(); assert(apoText:find("^# 5.0x: no pitch compensation"))
+            press(); assert(apoText:find("^# 1.0x: no pitch compensation"))
+            io.open = function() return nil, "denied" end
+            press(); drain(); assert(world.rate == 1.5); assert(hasLog("APO pitch file write failed"))
+        ''')
+
+    def test_speed_banner_logs_readback_after_f6_only(self):
+        self.run_lua('''
+            press(); drain(); assert(hasLog("SPEED NOW 1.5x"))
+            local count=#logs; tick(); assert(#logs == count)
+            press(); drain(); assert(hasLog("SPEED NOW 2.0x"))
+            press(); drain(); assert(hasLog("SPEED NOW 5.0x"))
+            press(); drain(); assert(hasLog("SPEED NOW 1.0x"))
+            logs = {}; rejectWrite=true; press(); drain(); assert(not hasLog("SPEED NOW"))
+        ''')
+
+    def test_audio_failure_does_not_block_game_speed(self):
+        self.run_lua('''
+            local bad = makeComponent(); function bad:SetPitchMultiplier() error("boom") end
+            press(); drain(); assert(world.rate == 1.5); assert(hasLog("failed=1"))
+        ''')
+
+if __name__ == '__main__':
+    unittest.main()
