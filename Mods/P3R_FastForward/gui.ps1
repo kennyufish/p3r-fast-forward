@@ -11,7 +11,7 @@ $script:last = $null
 
 $form = New-Object Windows.Forms.Form -Property @{
     Text = 'P3R 加速'; FormBorderStyle = 'FixedToolWindow'; TopMost = $true
-    StartPosition = 'Manual'; Location = '40,40'; ClientSize = '220,175'
+    StartPosition = 'Manual'; Location = '40,40'; ClientSize = '220,150'
 }
 $radios = @{}
 $x = 10
@@ -28,14 +28,13 @@ function New-Check($text, $y) {
 }
 $chkGame = New-Check '加速游戏' 40
 $chkSfx = New-Check '加速声音（语音/音效）' 65
-$chkBgm = New-Check '加速 BGM' 90
-$chkPitch = New-Check '修正声调（1.5x / 2x）' 115
-$status = New-Object Windows.Forms.Label -Property @{ Location = '10,145'; Width = 200; Text = 'F6 切倍速 / F8 重开本窗口' }
+$chkPitch = New-Check '修正声调（1.5x / 2x）' 90
+$status = New-Object Windows.Forms.Label -Property @{ Location = '10,120'; Width = 200; Text = 'F6 切倍速 / F8 重开本窗口' }
 $form.Controls.Add($status)
 
 function Save-Settings {
     $rate = $rates | Where-Object { $radios[$_].Checked }
-    $text = "rate=$rate`ngame=$([int]$chkGame.Checked)`nsfx=$([int]$chkSfx.Checked)`nbgm=$([int]$chkBgm.Checked)`npitch=$([int]$chkPitch.Checked)`n"
+    $text = "rate=$rate`ngame=$([int]$chkGame.Checked)`nsfx=$([int]$chkSfx.Checked)`npitch=$([int]$chkPitch.Checked)`n"
     try { [IO.File]::WriteAllText($file, $text); $script:last = $text }
     catch { $status.Text = '写入失败: ' + $_.Exception.Message }
 }
@@ -50,10 +49,9 @@ function Read-Settings {
     $radios[$map['rate']].Checked = $true
     $chkGame.Checked = $map['game'] -eq '1'
     $chkSfx.Checked = $map['sfx'] -eq '1'
-    $chkBgm.Checked = $map['bgm'] -eq '1'
     $chkPitch.Checked = $map['pitch'] -ne '0' # absent in v0.5.0 files; main.lua defaults it on too
 }
-foreach ($control in @($radios.Values) + $chkGame, $chkSfx, $chkBgm, $chkPitch) { $control.Add_Click({ Save-Settings }) }
+foreach ($control in @($radios.Values) + $chkGame, $chkSfx, $chkPitch) { $control.Add_Click({ Save-Settings }) }
 
 $timer = New-Object Windows.Forms.Timer -Property @{ Interval = 500 }
 $timer.Add_Tick({

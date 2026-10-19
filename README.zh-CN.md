@@ -21,7 +21,7 @@ Persona 3 Reload（Steam 版）的 UE4SS Lua mod。按 **F6** 让游戏速度在
    ```
    两行 `SamplingRate` 让声音能加速到 2×。`AtomConfig` 和 `AcfFileName` 两行加载 mod 自带的音频配置，里面多了声调修正用的总线。只能在游戏关闭时改 `Engine.ini`，游戏退出时会覆盖这个文件。
 
-加载成功后，`UE4SS.log` 里会出现 `[P3RFF] Loaded v0.6.2`。
+加载成功后，`UE4SS.log` 里会出现 `[P3RFF] Loaded v0.6.5`。
 
 ## 使用
 
@@ -30,7 +30,6 @@ Persona 3 Reload（Steam 版）的 UE4SS Lua mod。按 **F6** 让游戏速度在
 - 倍速：1.0× / 1.5× / 2.0× / 5.0×，和 F6 循环的是同一组。每次启动都从 1.0× 开始。
 - 加速游戏：游戏时间。关掉后游戏保持 1×，只加速声音。
 - 加速声音：对白和音效。
-- 加速 BGM：默认关闭。BGM 没有声调修正，加速后音调会变高。
 - 修正声调：默认开启，只在 1.5× 和 2× 时生效。
 
 开关设置保存在 `Mods\P3R_FastForward\settings.txt`。
@@ -39,7 +38,7 @@ Persona 3 Reload（Steam 版）的 UE4SS Lua mod。按 **F6** 让游戏速度在
 
 - 5× 时，游戏是 5×，但声音被 CRI 限制在约 2×。5× 不做声调修正。
 - 修正后的声音会损失一部分高频，听起来有点闷。
-- 过场视频的声音和标题画面的 BGM 不会加速。
+- BGM 和过场视频的声音不会加速。
 - 如果 F6 已经被别的 mod 占用，本 mod 不会加载。
 
 ## 卸载

@@ -21,7 +21,9 @@ end
 comps = {comp(1, "/Game/Sound/se_battle"), comp(2, "/Game/Sound/BGM_town"),
   comp(3, "/Game/Xrd777/CriData/CueSheet/Event/Voice_Event_Cmmu_103_030_C.Voice_Event_Cmmu_103_030_C")}
 function FindAllOf(name) return comps end
-local world = {IsValid = function() return true end, GetAddress = function() return worldAddr end, GetFullName = function() return "World" end}
+levels = {1, 2, 3}
+local world = {IsValid = function() return true end, GetAddress = function() return worldAddr end, GetFullName = function() return "World" end,
+  Levels = levels}
 function FindFirstOf() return {IsValid = function() return true end, GetWorld = function() return world end} end
 local dil = 1.0
 local statics = {IsValid = function() return true end,
@@ -50,30 +52,36 @@ def settings(text):
     open(tmp + 'settings.txt', 'w').write(text); lua.eval('loop')()
 def sends(): r = list(lua.eval('sends').values()); lua.execute('sends = {}'); return r
 def attaches(): return len(lua.eval('attaches'))
-settings('rate=1.5\ngame=1\nsfx=1\nbgm=0\npitch=1\n')
+settings('rate=1.5\ngame=1\nsfx=1\nbgm=1\npitch=1\n')  # pre-v0.6.5 file: bgm=1 is ignored, BGM stays 1x
 s = sends(); assert s == ['1:Zff_Pitch15+=1.0', '1:MasterOut=0.0', '3:Zff_Pitch15+=1.0', '3:MasterOut=0.0'], s  # voice routed too
 assert lua.eval('pitches[1]') == 1.5 and lua.eval('pitches[2]') is None and lua.eval('pitches[3]') == 1.5
 assert attaches() == 1 and lua.eval('attaches[1]') == 'DspBusSetting_0'
 assert dict(lua.eval('volumes').items()) == {'Reverb': 0.0, 'I3DL2 Rev': 0.0, 'Matrix': 0.0, 'Surrounder': 0.0}
-settings('rate=2.0\ngame=1\nsfx=1\nbgm=0\npitch=1\n')
+settings('rate=2.0\ngame=1\nsfx=1\npitch=1\n')
 s = sends(); assert s == ['1:Zff_Pitch15+=0.0', '1:Zff_Pitch20+=1.0', '1:MasterOut=0.0',
                           '3:Zff_Pitch15+=0.0', '3:Zff_Pitch20+=1.0', '3:MasterOut=0.0'], s
-assert attaches() == 1  # same world: no re-attach
-settings('rate=2.0\ngame=1\nsfx=1\nbgm=0\npitch=1\n')  # unchanged file: no resend
-lua.eval('loop')(); assert sends() == []
-lua.execute('worldAddr = 8'); lua.eval('loop')(); assert attaches() == 2 and sends() == []  # travel re-attaches
-settings('rate=5.0\ngame=1\nsfx=1\nbgm=0\npitch=1\n')
+assert attaches() == 2  # any settings change re-attaches (toggling the fix is the manual recovery)
+settings('rate=2.0\ngame=1\nsfx=1\npitch=1\n')  # unchanged file: no resend
+lua.eval('loop')(); assert sends() == [] and attaches() == 2  # plain poll: no re-attach
+def polls(n):
+    for _ in range(n): lua.eval('loop')()
+lua.execute('levels[4] = 4'); polls(2); assert attaches() == 2  # save load streams levels: wait until the count holds
+lua.execute('levels[4] = nil'); polls(2); assert attaches() == 2  # count still moving
+polls(1); assert attaches() == 3  # held for 2 polls: re-attach (same world address, setting dropped)
+polls(3); assert attaches() == 3
+lua.execute('worldAddr = 8'); polls(3); assert attaches() == 4 and sends() == []  # travel re-attaches
+settings('rate=5.0\ngame=1\nsfx=1\npitch=1\n')
 s = sends(); assert s == ['1:Zff_Pitch20+=0.0', '1:MasterOut=1.0', '3:Zff_Pitch20+=0.0', '3:MasterOut=1.0'], s  # no 5x bus: restored
-settings('rate=1.0\ngame=1\nsfx=1\nbgm=0\npitch=1\n')
+settings('rate=1.0\ngame=1\nsfx=1\npitch=1\n')
 assert sends() == [] and lua.eval('pitches[1]') == 1.0
-settings('rate=1.5\ngame=1\nsfx=1\nbgm=0\npitch=0\n')
+settings('rate=1.5\ngame=1\nsfx=1\npitch=0\n')
 assert sends() == []
-lua.execute('worldAddr = 9'); lua.eval('loop')(); assert attaches() == 2  # pitch fix off: never attaches
-settings('rate=2.0\ngame=1\nsfx=1\nbgm=0\npitch=1\n'); sends(); assert attaches() == 3
+lua.execute('worldAddr = 9'); polls(3); assert attaches() == 4  # pitch fix off: never attaches
+settings('rate=2.0\ngame=1\nsfx=1\npitch=1\n'); sends(); assert attaches() == 5
 lua.execute('comps[1].Sound = {GetFullName = function() return "/Game/CueSheet/BGM/bgm.bgm" end}')  # pooled component reused for BGM
-settings('rate=1.5\ngame=1\nsfx=1\nbgm=0\npitch=1\n')
+settings('rate=1.5\ngame=1\nsfx=1\npitch=1\n')
 s = sends(); assert s == ['1:Zff_Pitch20+=0.0', '1:MasterOut=1.0', '3:Zff_Pitch20+=0.0', '3:Zff_Pitch15+=1.0', '3:MasterOut=0.0'], s
-lua.execute('rackOK = false; worldAddr = 10'); lua.eval('loop')()  # attach failure must not stop audio routing
+lua.execute('rackOK = false; worldAddr = 10'); polls(3)  # attach failure must not stop audio routing
 logs = list(lua.eval('logs').values())
 assert any('DSP bus setting attach failed' in l for l in logs), logs
 assert not any('failed: ' in l and 'Audio apply' in l for l in logs), logs

@@ -21,7 +21,7 @@ Tested only on Steam build 22672075 with UE4SS 3.0.1 (d935b5b). A game update ma
    ```
    The two `SamplingRate` lines let the sound reach 2×. The `AtomConfig` and `AcfFileName` lines load the mod's audio config, which adds the pitch-correction buses. Edit `Engine.ini` only while the game is closed; the game overwrites it on exit.
 
-When the mod loads, `UE4SS.log` shows `[P3RFF] Loaded v0.6.2`.
+When the mod loads, `UE4SS.log` shows `[P3RFF] Loaded v0.6.5`.
 
 ## Use
 
@@ -30,7 +30,6 @@ A small settings window (Chinese labels) opens with the game. Press **F8** to re
 - Speed: 1.0× / 1.5× / 2.0× / 5.0×. F6 cycles the same list. The game always starts at 1.0×.
 - Speed up game: game time. Off keeps the game at 1× (only the sound speeds up).
 - Speed up sound: dialogue and sound effects.
-- Speed up BGM: off by default. BGM is not pitch-corrected, so its pitch goes up.
 - Fix pitch: on by default. Works at 1.5× and 2× only.
 
 The toggles are saved in `Mods\P3R_FastForward\settings.txt`.
@@ -39,7 +38,7 @@ The toggles are saved in `Mods\P3R_FastForward\settings.txt`.
 
 - At 5×, the game runs at 5× but CRI caps the sound at about 2×. 5× is not pitch-corrected.
 - Pitch-corrected sound loses some high frequencies, so it sounds a little muffled.
-- Cutscene video sound and the title screen BGM are not sped up.
+- BGM and cutscene video sound are not sped up.
 - If another mod already uses F6, this mod does not load.
 
 ## Uninstall

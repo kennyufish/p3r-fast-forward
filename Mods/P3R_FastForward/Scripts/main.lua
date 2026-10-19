@@ -37,7 +37,7 @@ end
 -- settings.txt is shared with gui.ps1: either side writes it, the other polls for changes.
 local MOD_DIR = (debug.getinfo(1, "S").source:match("^@(.*[\\/])[Ss]cripts[\\/]") or "Mods\\P3R_FastForward\\")
 local SETTINGS_FILE = MOD_DIR .. "settings.txt"
-local cfg = {rate = 1.0, game = true, sfx = true, bgm = false, pitch = true}
+local cfg = {rate = 1.0, game = true, sfx = true, pitch = true}
 local lastSettingsText = nil
 local function isRate(value)
     for _, rate in ipairs(RATES) do
@@ -47,7 +47,7 @@ local function isRate(value)
 end
 local function serializeSettings(s)
     local function flag(b) return b and 1 or 0 end
-    return string.format("rate=%.1f\ngame=%d\nsfx=%d\nbgm=%d\npitch=%d\n", s.rate, flag(s.game), flag(s.sfx), flag(s.bgm), flag(s.pitch))
+    return string.format("rate=%.1f\ngame=%d\nsfx=%d\npitch=%d\n", s.rate, flag(s.game), flag(s.sfx), flag(s.pitch))
 end
 -- Returns nil for partial writes or typos; the caller keeps the previous settings.
 local function parseSettings(text)
@@ -56,14 +56,14 @@ local function parseSettings(text)
     local rate = tonumber(map.rate)
     if not rate or not isRate(rate) then return nil end
     local s = {rate = rate}
-    for _, key in ipairs({"game", "sfx", "bgm"}) do
+    for _, key in ipairs({"game", "sfx"}) do -- "bgm" (removed in v0.6.5) is ignored: BGM always stays 1x
         if map[key] ~= "0" and map[key] ~= "1" then return nil end
         s[key] = map[key] == "1"
     end
     s.pitch = map.pitch ~= "0" -- added in v0.6.0; files from v0.5.0 lack it
     return s
 end
-assert(parseSettings(serializeSettings({rate = 1.5, game = true, sfx = false, bgm = true, pitch = false})).pitch == false)
+assert(parseSettings(serializeSettings({rate = 1.5, game = true, sfx = false, pitch = false})).pitch == false)
 assert(parseSettings("rate=2.0\ngame=1\nsfx=1\nbgm=0\n").pitch == true)
 assert(parseSettings("rate=3.0\ngame=1\nsfx=1\nbgm=0\n") == nil and parseSettings("rate=2.0\ngame=1\n") == nil)
 local function readSettingsFile()
@@ -83,7 +83,7 @@ local function writeSettingsFile()
     if ok then lastSettingsText = text else log("settings.txt write failed: " .. tostring(err)) end
 end
 local function rateFor(enabled) return enabled and cfg.rate or 1.0 end
-local function anySpeedUp() return cfg.rate ~= 1.0 and (cfg.game or cfg.sfx or cfg.bgm) end
+local function anySpeedUp() return cfg.rate ~= 1.0 and (cfg.game or cfg.sfx) end
 local dirty, queued = false, false
 local lastWorld, lastError, correctionCount = nil, nil, 0
 local statics = nil
@@ -119,16 +119,21 @@ local MASTER_BUS = "MasterOut"
 -- other bus send is lost (peak meter, 2026-10-19). Attaching also revives the stock FX buses vanilla never plays: mute them.
 local DSP_SETTING = "DspBusSetting_0"
 local STOCK_FX_BUSES = {"Reverb", "I3DL2 Rev", "Matrix", "Surrounder"}
-local dspWorld = nil -- world address the setting was last attached in
--- shortcut: re-attached once per world; if pitch-fixed sounds go silent mid-level, attach on every poll instead.
-local function attachDsp(identity)
-    if dspWorld == identity then return end
+-- Loading a save drops the setting natively (no AtomAsrRack UFunction call, no LoadMap: P3R stays in LV_Xrd777_P and
+-- streams sublevels; title 7 levels -> 19 -> 9 in gameplay, BusDiag 2026-10-19). So any change of
+-- "<world address>/<loaded level count>" marks the setting stale (the count can come back to its old value) and it
+-- re-attaches once that key has held for SETTLE_POLLS polls. Every settings change re-attaches too (toggling the pitch
+-- fix is the manual recovery). Not every poll: each attach silences all output for ~70 ms.
+local SETTLE_POLLS = 2
+local dspStale = true -- key changed since the last attach
+local seenKey, seenPolls = nil, 0
+local function attachDsp(key)
     local rack = StaticFindObject("/Script/CriWareRuntime.Default__AtomAsrRack"):GetDefaultAsrRack()
     if not valid(rack) then error("default AtomAsrRack not found") end
     rack:AttachDspBusSetting(DSP_SETTING)
     for _, bus in ipairs(STOCK_FX_BUSES) do rack:SetBusVolumeByName(bus, 0.0) end
-    dspWorld = identity
-    log("Attached " .. DSP_SETTING .. " to rack 0; stock FX buses muted")
+    dspStale = false
+    log("Attached " .. DSP_SETTING .. " to rack 0 (world/levels=" .. key .. "); stock FX buses muted")
 end
 local routed = {} -- component address -> bus it was routed to; absent = untouched, false = restored to MasterOut
 -- Player send levels multiply the cue's own levels, so a bus the cue never sends to needs the additive offset.
@@ -146,14 +151,14 @@ local function route(component, bus)
     routed[key] = bus or false
     return true
 end
-local function applyAudio(sfxRate, bgmRate)
+local function applyAudio(sfxRate)
     local changed, failed, bgm, routedCount = 0, 0, 0, 0
     for _, component in ipairs(FindAllOf("AtomComponent") or {}) do
         local ok, wrote = pcall(function()
             if not component:IsValid() then return false end
             -- Pooled components can switch between BGM and SFX, so every component is re-targeted each poll.
             local target, music = sfxRate, isBgm(component)
-            if music then target = bgmRate; bgm = bgm + 1 end
+            if music then target = 1.0; bgm = bgm + 1 end
             local bus = cfg.pitch and not music and PITCH_BUS[target] or nil
             local rerouted = route(component, bus)
             if bus then routedCount = routedCount + 1 end
@@ -227,20 +232,24 @@ local function reconcile(reason)
         log("World=" .. world:GetFullName() .. " address=" .. identity .. " source=" .. worldSource .. "; GameplayStatics resolved")
         lastWorld = identity
     end
-    local gameRate, sfxRate, bgmRate = rateFor(cfg.game), rateFor(cfg.sfx), rateFor(cfg.bgm)
+    local gameRate, sfxRate = rateFor(cfg.game), rateFor(cfg.sfx)
     local before, after = applyDilation(world, gameRate)
     logAudioLimits()
-    if cfg.pitch and PITCH_BUS[sfxRate] then
-        local attached, why = pcall(attachDsp, identity)
+    local levels = "?"
+    pcall(function() levels = tostring(#world.Levels) end)
+    local key = identity .. "/" .. levels
+    if key == seenKey then seenPolls = seenPolls + 1 else seenKey, seenPolls, dspStale = key, 0, true end
+    if cfg.pitch and PITCH_BUS[sfxRate] and (dirty or (dspStale and seenPolls >= SETTLE_POLLS)) then
+        local attached, why = pcall(attachDsp, key)
         if not attached then failOnce("DSP bus setting attach failed; pitch-fixed sounds may be silent: " .. tostring(why)) end
     end
-    local audioChanged, audioFailed, audioBgm, audioRouted = applyAudio(sfxRate, bgmRate)
+    local audioChanged, audioFailed, audioBgm, audioRouted = applyAudio(sfxRate)
     if dirty or changedWorld then
-        log(string.format("%s game=%.1f sfx=%.1f bgm=%.1f pitchFix=%s; dilation %.3f -> %.3f; audio changed=%d failed=%d bgmMatched=%d pitchRouted=%d",
-            reason, gameRate, sfxRate, bgmRate, tostring(cfg.pitch), before, after, audioChanged, audioFailed, audioBgm, audioRouted))
+        log(string.format("%s game=%.1f sfx=%.1f pitchFix=%s; dilation %.3f -> %.3f; audio changed=%d failed=%d bgmMatched=%d pitchRouted=%d",
+            reason, gameRate, sfxRate, tostring(cfg.pitch), before, after, audioChanged, audioFailed, audioBgm, audioRouted))
     end
     -- ASCII only: GUI console glyph support for UTF-8 is unverified.
-    if dirty then log(string.format("===== GAME %.1fx  SFX %.1fx  BGM %.1fx =====", gameRate, sfxRate, bgmRate)) end
+    if dirty then log(string.format("===== GAME %.1fx  SFX %.1fx =====", gameRate, sfxRate)) end
     lastWorld, lastError, dirty = identity, nil, false
 end
 -- Coalesce dispatches: rapid presses retain parity; restore survives loading.
@@ -299,5 +308,5 @@ writeSettingsFile()
 active, _G.P3RFF_loaded = true, true
 writeApoPitch(1.0) -- clear compensation left over from a session that exited at 1.5x/2x
 launchGui()
-log("Loaded v0.6.2; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0, F8 opens GUI; LoopAsync=500ms.")
+log("Loaded v0.6.5; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0, F8 opens GUI; LoopAsync=500ms.")
 log("Restore with F6 before disabling. Hot unload unsupported; exit/restart game for reliable cleanup.")
