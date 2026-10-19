@@ -68,8 +68,12 @@ def polls(n):
 lua.execute('levels[4] = 4'); polls(2); assert attaches() == 2  # save load streams levels: wait until the count holds
 lua.execute('levels[4] = nil'); polls(2); assert attaches() == 2  # count still moving
 polls(1); assert attaches() == 3  # held for 2 polls: re-attach (same world address, setting dropped)
-polls(3); assert attaches() == 3
-lua.execute('worldAddr = 8'); polls(3); assert attaches() == 4 and sends() == []  # travel re-attaches
+RESEND = ['1:Zff_Pitch20+=1.0', '1:MasterOut=0.0', '3:Zff_Pitch20+=1.0', '3:MasterOut=0.0']
+s = sends(); assert s == RESEND, s  # every attach re-sends all routes, like toggling the fix off and on
+polls(3); assert attaches() == 3 and sends() == []
+lua.execute('comps[3].PitchMultiplier = 1.0'); polls(1)  # new component at a recycled address the cache maps to Zff_Pitch20
+s = sends(); assert s == ['3:Zff_Pitch20+=1.0', '3:MasterOut=0.0'] and lua.eval('pitches[3]') == 2.0, s
+lua.execute('worldAddr = 8'); polls(3); assert attaches() == 4 and sends() == RESEND  # travel re-attaches
 settings('rate=5.0\ngame=1\nsfx=1\npitch=1\n')
 s = sends(); assert s == ['1:Zff_Pitch20+=0.0', '1:MasterOut=1.0', '3:Zff_Pitch20+=0.0', '3:MasterOut=1.0'], s  # no 5x bus: restored
 settings('rate=1.0\ngame=1\nsfx=1\npitch=1\n')

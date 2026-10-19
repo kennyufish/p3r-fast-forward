@@ -140,18 +140,19 @@ local routed = {} -- component address -> bus it was routed to; absent = untouch
 local function setSend(component, bus, level)
     if bus == MASTER_BUS then component:SetBusSendLevelByName(bus, level) else component:SetBusSendLevelOffsetByName(bus, level) end
 end
-local function route(component, bus)
+-- force re-sends a bus route the cache already holds (the cache cannot see a new component at a recycled address).
+local function route(component, bus, force)
     local key = tostring(component:GetAddress())
     local previous = routed[key]
-    if (previous or nil) == bus then return false end
+    if (previous or nil) == bus and not (force and bus) then return false end
     if previous == nil and bus == nil then return false end -- never routed: leave the cue's own sends alone
-    if previous then setSend(component, previous, 0.0) end
+    if previous and previous ~= bus then setSend(component, previous, 0.0) end
     if bus then setSend(component, bus, 1.0) end
     setSend(component, MASTER_BUS, bus and 0.0 or 1.0)
     routed[key] = bus or false
     return true
 end
-local function applyAudio(sfxRate)
+local function applyAudio(sfxRate, resend)
     local changed, failed, bgm, routedCount = 0, 0, 0, 0
     for _, component in ipairs(FindAllOf("AtomComponent") or {}) do
         local ok, wrote = pcall(function()
@@ -160,10 +161,13 @@ local function applyAudio(sfxRate)
             local target, music = sfxRate, isBgm(component)
             if music then target = 1.0; bgm = bgm + 1 end
             local bus = cfg.pitch and not music and PITCH_BUS[target] or nil
-            local rerouted = route(component, bus)
-            if bus then routedCount = routedCount + 1 end
             local readOK, current = pcall(function() return component.PitchMultiplier end)
-            if readOK and type(current) == "number" and math.abs(current - target) <= 0.001 then return rerouted end
+            local pitched = readOK and type(current) == "number" and math.abs(current - target) <= 0.001
+            -- Off target = a new component (maybe at a recycled address the cache maps to a bus) or a rate change: re-send.
+            -- Scene changes left such sounds sped up on MasterOut until the user toggled the fix (2026-10-19).
+            local rerouted = route(component, bus, resend or not pitched)
+            if bus then routedCount = routedCount + 1 end
+            if pitched then return rerouted end
             component:SetPitchMultiplier(target)
             return true
         end)
@@ -239,12 +243,14 @@ local function reconcile(reason)
     pcall(function() levels = tostring(#world.Levels) end)
     local key = identity .. "/" .. levels
     if key == seenKey then seenPolls = seenPolls + 1 else seenKey, seenPolls, dspStale = key, 0, true end
-    if cfg.pitch and PITCH_BUS[sfxRate] and (dirty or (dspStale and seenPolls >= SETTLE_POLLS)) then
+    -- Every attach also re-sends every component's bus sends: the same as toggling the fix off and on.
+    local resend = cfg.pitch and PITCH_BUS[sfxRate] and (dirty or (dspStale and seenPolls >= SETTLE_POLLS)) or false
+    if resend then
         local attached, why = pcall(attachDsp, key)
         if not attached then failOnce("DSP bus setting attach failed; pitch-fixed sounds may be silent: " .. tostring(why)) end
     end
-    local audioChanged, audioFailed, audioBgm, audioRouted = applyAudio(sfxRate)
-    if dirty or changedWorld then
+    local audioChanged, audioFailed, audioBgm, audioRouted = applyAudio(sfxRate, resend)
+    if dirty or changedWorld or resend then
         log(string.format("%s game=%.1f sfx=%.1f pitchFix=%s; dilation %.3f -> %.3f; audio changed=%d failed=%d bgmMatched=%d pitchRouted=%d",
             reason, gameRate, sfxRate, tostring(cfg.pitch), before, after, audioChanged, audioFailed, audioBgm, audioRouted))
     end
@@ -308,5 +314,5 @@ writeSettingsFile()
 active, _G.P3RFF_loaded = true, true
 writeApoPitch(1.0) -- clear compensation left over from a session that exited at 1.5x/2x
 launchGui()
-log("Loaded v0.6.5; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0, F8 opens GUI; LoopAsync=500ms.")
+log("Loaded v0.6.6; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0, F8 opens GUI; LoopAsync=500ms.")
 log("Restore with F6 before disabling. Hot unload unsupported; exit/restart game for reliable cleanup.")

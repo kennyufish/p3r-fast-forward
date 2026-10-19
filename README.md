@@ -21,7 +21,7 @@ Tested only on Steam build 22672075 with UE4SS 3.0.1 (d935b5b). A game update ma
    ```
    The two `SamplingRate` lines let the sound reach 2×. The `AtomConfig` and `AcfFileName` lines load the mod's audio config, which adds the pitch-correction buses. Edit `Engine.ini` only while the game is closed; the game overwrites it on exit.
 
-When the mod loads, `UE4SS.log` shows `[P3RFF] Loaded v0.6.5`.
+When the mod loads, `UE4SS.log` shows `[P3RFF] Loaded v0.6.6`.
 
 ## Use
 
