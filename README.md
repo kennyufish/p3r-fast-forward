@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-A UE4SS Lua mod for Persona 3 Reload (Steam). Press **F6** to cycle the game speed through 1× → 1.5× → 2× → 5×. Dialogue and sound effects speed up too, and at 1.5× and 2× their pitch is corrected back to normal.
+A UE4SS Lua mod for Persona 3 Reload (Steam). Press **F6** to cycle the game speed through 1× → 1.5× → 2× → 5× → 10×. Dialogue and sound effects speed up too, and at 1.5× and 2× their pitch is corrected back to normal.
 
 Tested only on Steam build 22672075 with UE4SS 3.0.1 (d935b5b). A game update may break it.
 
@@ -27,10 +27,11 @@ When the mod loads, `UE4SS.log` shows `[P3RFF] Loaded v0.6.6`.
 
 A small settings window (Chinese labels) opens with the game. Press **F8** to reopen it.
 
-- Speed: 1.0× / 1.5× / 2.0× / 5.0×. F6 cycles the same list. The game always starts at 1.0×.
+- Speed: 1.0× / 1.5× / 2.0× / 5.0× / 10.0×. F6 cycles the same list. The game always starts at 1.0×.
 - Speed up game: game time. Off keeps the game at 1× (only the sound speeds up).
 - Speed up sound: dialogue and sound effects.
 - Fix pitch: on by default. Works at 1.5× and 2× only.
+- RUSH: on by default. Pressing **Tab** in battle (the game's own Rush auto-battle key) switches to the RUSH speed (1.0×–10.0×, default 5.0×). Speed goes back when the fight ends, or when you press Tab again to cancel Rush.
 
 The toggles are saved in `Mods\P3R_FastForward\settings.txt`.
 

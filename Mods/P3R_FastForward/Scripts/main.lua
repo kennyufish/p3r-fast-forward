@@ -1,8 +1,9 @@
 -- Game speed plus AtomComponent pitch-multiplier audio speed-up (resampling raises pitch).
 -- Optional pitch fix routes sped non-BGM sounds through PitchShifter buses added by xrd777_ff.acf.
 local function log(message) print("[P3RFF] " .. message .. "\n") end
--- 5x passes 5 to SetPitchMultiplier uncompensated (user choice); CRI clamps it (see logAudioLimits).
-local RATES = {1.0, 1.5, 2.0, 5.0} -- F6 cycles through these; gui.ps1 offers the same list.
+-- 5x/10x pass the rate to SetPitchMultiplier uncompensated (user choice); CRI clamps it (see logAudioLimits).
+local RATES = {1.0, 1.5, 2.0, 5.0, 10.0} -- F6 cycles through these; gui.ps1 offers the same list.
+local RUSH_MIN, RUSH_MAX = 1.0, 10.0 -- RUSH rate is free-form within this range (gui.ps1 uses the same bounds)
 if _G.P3RFF_loaded then
     log("Duplicate execution ignored; restart the game to reload this mod.")
     return
@@ -37,7 +38,7 @@ end
 -- settings.txt is shared with gui.ps1: either side writes it, the other polls for changes.
 local MOD_DIR = (debug.getinfo(1, "S").source:match("^@(.*[\\/])[Ss]cripts[\\/]") or "Mods\\P3R_FastForward\\")
 local SETTINGS_FILE = MOD_DIR .. "settings.txt"
-local cfg = {rate = 1.0, game = true, sfx = true, pitch = true}
+local cfg = {rate = 1.0, game = true, sfx = true, pitch = true, rush = true, rushrate = 5.0}
 local lastSettingsText = nil
 local function isRate(value)
     for _, rate in ipairs(RATES) do
@@ -47,7 +48,8 @@ local function isRate(value)
 end
 local function serializeSettings(s)
     local function flag(b) return b and 1 or 0 end
-    return string.format("rate=%.1f\ngame=%d\nsfx=%d\npitch=%d\n", s.rate, flag(s.game), flag(s.sfx), flag(s.pitch))
+    return string.format("rate=%.1f\ngame=%d\nsfx=%d\npitch=%d\nrush=%d\nrushrate=%.1f\n",
+        s.rate, flag(s.game), flag(s.sfx), flag(s.pitch), flag(s.rush), s.rushrate)
 end
 -- Returns nil for partial writes or typos; the caller keeps the previous settings.
 local function parseSettings(text)
@@ -61,9 +63,15 @@ local function parseSettings(text)
         s[key] = map[key] == "1"
     end
     s.pitch = map.pitch ~= "0" -- added in v0.6.0; files from v0.5.0 lack it
+    s.rush = map.rush ~= "0" -- rush/rushrate added in v0.7.0; older files lack them
+    s.rushrate = tonumber(map.rushrate or "5.0")
+    if not s.rushrate or s.rushrate < RUSH_MIN or s.rushrate > RUSH_MAX then return nil end
     return s
 end
-assert(parseSettings(serializeSettings({rate = 1.5, game = true, sfx = false, pitch = false})).pitch == false)
+local roundTrip = parseSettings(serializeSettings({rate = 10.0, game = true, sfx = false, pitch = false, rush = false, rushrate = 3.5}))
+assert(roundTrip.pitch == false and roundTrip.rate == 10.0 and roundTrip.rush == false and roundTrip.rushrate == 3.5)
+assert(parseSettings("rate=2.0\ngame=1\nsfx=1\npitch=1\n").rush == true and parseSettings("rate=2.0\ngame=1\nsfx=1\n").rushrate == 5.0)
+assert(parseSettings("rate=2.0\ngame=1\nsfx=1\nrushrate=11.0\n") == nil)
 assert(parseSettings("rate=2.0\ngame=1\nsfx=1\nbgm=0\n").pitch == true)
 assert(parseSettings("rate=3.0\ngame=1\nsfx=1\nbgm=0\n") == nil and parseSettings("rate=2.0\ngame=1\n") == nil)
 local function readSettingsFile()
@@ -82,8 +90,14 @@ local function writeSettingsFile()
     end)
     if ok then lastSettingsText = text else log("settings.txt write failed: " .. tostring(err)) end
 end
-local function rateFor(enabled) return enabled and cfg.rate or 1.0 end
-local function anySpeedUp() return cfg.rate ~= 1.0 and (cfg.game or cfg.sfx) end
+-- RUSH: when enabled, Tab in battle (the game's own auto-battle key) forces cfg.rushrate until Tab again or the battle
+-- ends; cfg.rate is untouched.
+local rush, rushToggled = false, false
+local function effectiveRate() return rush and cfg.rushrate or cfg.rate end
+-- Dilation this mod may have set; anything else is game-owned slow motion (see applyDilation).
+local function isOurRate(value) return isRate(value) or math.abs(value - cfg.rushrate) <= 0.001 end
+local function rateFor(enabled) return enabled and effectiveRate() or 1.0 end
+local function anySpeedUp() return effectiveRate() ~= 1.0 and (cfg.game or cfg.sfx) end
 local dirty, queued = false, false
 local lastWorld, lastError, correctionCount = nil, nil, 0
 local statics = nil
@@ -91,6 +105,11 @@ local function failOnce(message)
     if message ~= lastError then log(message); lastError = message end
 end
 local function valid(object) return object ~= nil and object:IsValid() end
+-- Battle = the fighting-phase actor (actor class scan, 2026-10-19). BtlManager also outlives the fight into the result
+-- screen, so it would restore the speed too late. Game thread only.
+local function inBattle() return valid(FindFirstOf("BP_BtlPhaseFighting_C")) end
+local RUSH_END_POLLS = 2 -- consecutive misses before RUSH ends, in case the phase actor blinks between turns (unverified)
+local rushMisses = 0
 -- CRI clamps frequency ratios above MaxPitch (cents) or a pool's max sampling rate.
 local settingsLogged = false
 local function logAudioLimits()
@@ -199,7 +218,7 @@ local function applyDilation(world, rate)
     -- shortcut: preserve game-owned slow motion; global dilation cannot compose
     -- every cinematic clock. Revisit after measured game-specific timing tests.
     -- A fresh user request (dirty) for a speed-up still overrides it.
-    if not isRate(before) and (rate == 1.0 or not dirty) then
+    if not isOurRate(before) and (rate == 1.0 or not dirty) then
         failOnce("Game-owned dilation=" .. tostring(before) .. "; not overriding cinematic slow motion.")
         return before, before
     end
@@ -220,6 +239,21 @@ local function applyDilation(world, rate)
 end
 -- Called ONLY on the game thread. Never retain a world across travel/GC.
 local function reconcile(reason)
+    if rush and not cfg.rush then
+        rush, dirty, rushToggled = false, true, false
+        log("RUSH disabled in settings: back to " .. string.format("%.1fx", cfg.rate))
+    elseif rushToggled then
+        rushToggled = false
+        local battle = cfg.rush and inBattle()
+        if battle or rush then rush, dirty, rushMisses = not rush, true, 0 end
+        log("Tab: RUSH " .. (rush and "on" or "off") .. (cfg.rush and (battle and "" or " (no battle)") or " (disabled)"))
+    elseif rush then
+        rushMisses = inBattle() and 0 or rushMisses + 1
+    end
+    if rush and rushMisses >= RUSH_END_POLLS then
+        rush, dirty, rushMisses = false, true, 0
+        log("Battle ended: RUSH off, back to " .. string.format("%.1fx", cfg.rate))
+    end
     if not anySpeedUp() and not dirty then return end
     local world, worldSource = resolveWorld()
     if not world then
@@ -288,7 +322,7 @@ local active = false
 local loopOK, loopError = pcall(LoopAsync, 500, function()
     if not active then return true end
     pollSettings()
-    if anySpeedUp() or dirty then schedule("poll/travel") end
+    if anySpeedUp() or dirty or rush then schedule("poll/travel") end
     return false
 end)
 if not loopOK then log("INIT FAILED: LoopAsync: " .. tostring(loopError)); return end
@@ -306,6 +340,12 @@ end)
 if not keyOK then log("INIT FAILED: F6 registration: " .. tostring(keyError)); return end
 local guiKeyOK, guiKeyError = pcall(RegisterKeyBind, Key.F8, launchGui)
 if not guiKeyOK then log("F8 registration failed (GUI reopen unavailable): " .. tostring(guiKeyError)) end
+-- UE4SS key binds do not consume the key, so the game still starts its own Rush.
+local rushKeyOK, rushKeyError = pcall(RegisterKeyBind, Key.TAB, function()
+    rushToggled = true
+    schedule("Tab")
+end)
+if not rushKeyOK then log("Tab registration failed (RUSH unavailable): " .. tostring(rushKeyError)) end
 -- Keep the saved toggles but always boot at 1.0x, as before the GUI existed.
 local _, saved = readSettingsFile()
 if saved then cfg = saved end
@@ -314,5 +354,5 @@ writeSettingsFile()
 active, _G.P3RFF_loaded = true, true
 writeApoPitch(1.0) -- clear compensation left over from a session that exited at 1.5x/2x
 launchGui()
-log("Loaded v0.6.6; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0, F8 opens GUI; LoopAsync=500ms.")
+log("Loaded v0.7.0; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0/10.0, F8 opens GUI, Tab in battle = RUSH; LoopAsync=500ms.")
 log("Restore with F6 before disabling. Hot unload unsupported; exit/restart game for reliable cleanup.")

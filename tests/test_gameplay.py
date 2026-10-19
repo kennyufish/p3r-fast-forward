@@ -21,6 +21,7 @@ function viewport:GetWorld() assert(onGameThread); return world end
 function FindFirstOf(name)
     assert(onGameThread)
     if name == 'GameViewportClient' and viewportAvailable then return viewport end
+    if name == 'BP_BtlPhaseFighting_C' and battle then return battle end
 end
 statics = {valid=true, writes=0}
 function statics:IsValid() return self.valid end
@@ -45,7 +46,8 @@ io.open = function(path, mode)
     return {write=function(_, s) files[path] = s; if path:find('p3r_pitch', 1, true) then apoText = s end end, close=function() end}
 end
 os.execute = function() end -- the mod launches gui.ps1 on load
-Key = {F6=117, F8=119}
+Key = {F6=117, F8=119, TAB=9}
+battle = nil -- live BP_BtlPhaseFighting_C stand-in
 rack = {attaches=0}
 function rack:IsValid() return true end
 function rack:AttachDspBusSetting() assert(onGameThread); self.attaches = self.attaches + 1 end
@@ -94,13 +96,13 @@ class Gameplay(unittest.TestCase):
         self.lua.execute(code)
 
     def test_supported_scheduler_and_toggle(self):
-        self.run_lua('assert(#loops == 1); assert(statics.writes == 0); press(); assert(world.rate == 1); drain(); assert(world.rate == 1.5); press(); drain(); assert(world.rate == 2.0); press(); drain(); assert(world.rate == 5.0); press(); drain(); assert(world.rate == 1)')
+        self.run_lua('assert(#loops == 1); assert(statics.writes == 0); press(); assert(world.rate == 1); drain(); assert(world.rate == 1.5); press(); drain(); assert(world.rate == 2.0); press(); drain(); assert(world.rate == 5.0); press(); drain(); assert(world.rate == 10.0); press(); drain(); assert(world.rate == 1)')
 
     def test_rapid_parity_and_bounded_dispatch(self):
         self.run_lua('for i=1,100 do press() end; assert(#queue == 1); drain(); assert(world.rate == 1); press(); drain(); assert(world.rate == 1.5)')
 
     def test_loading_retains_fast_and_restore(self):
-        self.run_lua('missingWorld=true; press(); drain(); missingWorld=false; tick(); assert(world.rate == 1.5); missingWorld=true; press(); press(); press(); drain(); missingWorld=false; tick(); assert(world.rate == 1)')
+        self.run_lua('missingWorld=true; press(); drain(); missingWorld=false; tick(); assert(world.rate == 1.5); missingWorld=true; press(); press(); press(); press(); drain(); missingWorld=false; tick(); assert(world.rate == 1)')
 
     def test_viewport_world_without_possessed_pawn(self):
         self.run_lua('missingWorld=true; viewportAvailable=true; press(); drain(); assert(world.rate == 1.5)')
@@ -133,6 +135,7 @@ class Gameplay(unittest.TestCase):
             local c = makeComponent(); tick(); assert(c.PitchMultiplier == 1.5)
             press(); drain(); assert(a.PitchMultiplier == 2.0 and c.PitchMultiplier == 2.0)
             press(); drain(); assert(a.PitchMultiplier == 5.0 and c.PitchMultiplier == 5.0)
+            press(); drain(); assert(a.PitchMultiplier == 10.0 and c.PitchMultiplier == 10.0)
             press(); drain(); assert(a.PitchMultiplier == 1.0 and c.PitchMultiplier == 1.0)
             assert(hasLog("Audio limit MaxPitch="))
         ''')
@@ -155,8 +158,33 @@ class Gameplay(unittest.TestCase):
             local count=#logs; tick(); assert(#logs == count)
             press(); drain(); assert(hasLog("GAME 2.0x"))
             press(); drain(); assert(hasLog("GAME 5.0x"))
+            press(); drain(); assert(hasLog("GAME 10.0x"))
             press(); drain(); assert(hasLog("GAME 1.0x"))
             logs = {}; rejectWrite=true; press(); drain(); assert(not hasLog("====="))
+        ''')
+
+    def test_rush_forces_5x_in_battle_and_restores_after(self):
+        self.run_lua('''
+            press(); drain(); assert(world.rate == 1.5)
+            keys[Key.TAB](); drain(); assert(world.rate == 1.5) -- no battle: ignored
+            battle = {IsValid=function() return true end}
+            keys[Key.TAB](); drain(); assert(world.rate == 5.0)
+            tick(); assert(world.rate == 5.0)
+            keys[Key.TAB](); drain(); assert(world.rate == 1.5) -- Tab again cancels
+            keys[Key.TAB](); drain(); assert(world.rate == 5.0)
+            local fight = battle
+            battle = nil; tick(); assert(world.rate == 5.0) -- one miss: phase actor may blink between turns
+            battle = fight; tick(); battle = nil; tick(); assert(world.rate == 5.0)
+            tick(); assert(world.rate == 1.5); assert(hasLog("Battle ended"))
+            press(); press(); press(); press(); drain(); assert(world.rate == 1.0)
+            battle = {IsValid=function() return true end}; keys[Key.TAB](); drain(); assert(world.rate == 5.0)
+            battle = nil; tick(); tick(); assert(world.rate == 1.0)
+            local path; for p in pairs(files) do if p:find("settings.txt", 1, true) then path = p end end
+            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=1\\nrushrate=3.5\\n"; tick()
+            battle = {IsValid=function() return true end}; keys[Key.TAB](); drain(); assert(world.rate == 3.5) -- custom RUSH rate
+            tick(); assert(world.rate == 3.5) -- 3.5 is ours, not game-owned slow motion
+            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=0\\nrushrate=3.5\\n"; tick(); assert(world.rate == 1.0) -- disabling ends it
+            keys[Key.TAB](); drain(); assert(world.rate == 1.0); assert(hasLog("(disabled)"))
         ''')
 
     def test_audio_failure_does_not_block_game_speed(self):
