@@ -36,10 +36,25 @@ package.preload.UEHelpers = function() return {GetWorld=function()
 end} end
 function print(s) table.insert(logs, s) end
 function RegisterBeginPlayPostHook(cb) beginPlay = cb end
-apoText = nil
-io.open = function() return {write=function(_, s) apoText = s end, close=function() end} end
-Key = {F6=117}
-function StaticFindObject() assert(onGameThread); return statics end
+files, apoText = {}, nil -- in-memory settings.txt; apoText = last write to the APO file
+io.open = function(path, mode)
+    if mode == 'r' then
+        if files[path] == nil then return nil, 'missing' end
+        return {read=function() return files[path] end, close=function() end}
+    end
+    return {write=function(_, s) files[path] = s; if path:find('p3r_pitch', 1, true) then apoText = s end end, close=function() end}
+end
+os.execute = function() end -- the mod launches gui.ps1 on load
+Key = {F6=117, F8=119}
+rack = {attaches=0}
+function rack:IsValid() return true end
+function rack:AttachDspBusSetting() assert(onGameThread); self.attaches = self.attaches + 1 end
+function rack:SetBusVolumeByName() end
+function StaticFindObject(path)
+    assert(onGameThread)
+    if path:find('AtomAsrRack', 1, true) then return {GetDefaultAsrRack=function() return rack end} end
+    return statics
+end
 function IsKeyBindRegistered(k) return keys[k] ~= nil end
 function RegisterKeyBind(k, cb) assert(not keys[k]); keys[k] = cb end
 function LoopAsync(delay, cb) assert(delay == 500); table.insert(loops, cb) end
@@ -55,8 +70,11 @@ end
 function press() keys[Key.F6]() end
 components = {}
 function makeComponent(pitch)
-    local c = {PitchMultiplier=pitch or 1.0, sets=0, alive=true}
+    local c = {PitchMultiplier=pitch or 1.0, sets=0, alive=true, sends={}}
     function c:IsValid() return self.alive end
+    function c:GetAddress() return tostring(self) end
+    function c:SetBusSendLevelByName(bus, level) self.sends[bus] = level end
+    function c:SetBusSendLevelOffsetByName(bus, level) self.sends[bus] = level end
     function c:SetPitchMultiplier(r) assert(onGameThread); self.sets = self.sets + 1; self.PitchMultiplier = r end
     table.insert(components, c); return c
 end
@@ -119,31 +137,26 @@ class Gameplay(unittest.TestCase):
             assert(hasLog("Audio limit MaxPitch="))
         ''')
 
-    def test_apo_off_by_default_writes_nothing(self):
-        self.run_lua('press(); drain(); assert(world.rate == 1.5); assert(apoText == nil); assert(hasLog("APO Pitchproof off"))')
+    def test_apo_cleared_on_load_only(self):
+        self.run_lua('assert(apoText:find("^# 1.0x: no pitch compensation")); apoText = nil; press(); drain(); assert(world.rate == 1.5); assert(apoText == nil)')
 
-    def test_apo_pitch_file_follows_f6(self):
-        self.lua = LuaRuntime()
-        self.lua.execute(HARNESS)
-        self.lua.execute(self.source.replace('local APO_ENABLED = false', 'local APO_ENABLED = true', 1))
+    def test_settings_file_drives_rate_and_f6_writes_it(self):
         self.run_lua('''
-            assert(apoText:find("^#"))
-            press(); assert(apoText:find("MC44MzMs", 1, true))
-            press(); assert(apoText:find("MS4wMDAsMC41MDAsMS4w", 1, true))
-            press(); assert(apoText:find("^# 5.0x: no pitch compensation"))
-            press(); assert(apoText:find("^# 1.0x: no pitch compensation"))
-            io.open = function() return nil, "denied" end
-            press(); drain(); assert(world.rate == 1.5); assert(hasLog("APO pitch file write failed"))
+            local path; for p in pairs(files) do if p:find("settings.txt", 1, true) then path = p end end
+            assert(files[path]:find("rate=1.0", 1, true))
+            press(); assert(files[path]:find("rate=1.5", 1, true))
+            files[path] = "rate=2.0\\ngame=1\\nsfx=1\\nbgm=0\\npitch=1\\n"; tick(); assert(world.rate == 2.0)
+            files[path] = "rate=1.5\\ngame="; tick(); assert(world.rate == 2.0) -- partial write ignored
         ''')
 
     def test_speed_banner_logs_readback_after_f6_only(self):
         self.run_lua('''
-            press(); drain(); assert(hasLog("SPEED NOW 1.5x"))
+            press(); drain(); assert(hasLog("GAME 1.5x"))
             local count=#logs; tick(); assert(#logs == count)
-            press(); drain(); assert(hasLog("SPEED NOW 2.0x"))
-            press(); drain(); assert(hasLog("SPEED NOW 5.0x"))
-            press(); drain(); assert(hasLog("SPEED NOW 1.0x"))
-            logs = {}; rejectWrite=true; press(); drain(); assert(not hasLog("SPEED NOW"))
+            press(); drain(); assert(hasLog("GAME 2.0x"))
+            press(); drain(); assert(hasLog("GAME 5.0x"))
+            press(); drain(); assert(hasLog("GAME 1.0x"))
+            logs = {}; rejectWrite=true; press(); drain(); assert(not hasLog("====="))
         ''')
 
     def test_audio_failure_does_not_block_game_speed(self):
