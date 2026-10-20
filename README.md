@@ -31,7 +31,7 @@ A small settings window (Chinese labels) opens with the game. Press **F8** to re
 - Speed up game: game time. Off keeps the game at 1× (only the sound speeds up).
 - Speed up sound: dialogue and sound effects.
 - Fix pitch: on by default. Works at 1.5× and 2× only.
-- RUSH: on by default. Pressing **Tab** in battle (the game's own Rush auto-battle key) switches to the RUSH speed (1.0×–10.0×, default 5.0×). Speed goes back when the fight ends, or when you press Tab again to cancel Rush.
+- RUSH: on by default. When the game's Rush auto-battle is on (started with Tab, a gamepad button or any rebound key), the game runs at the RUSH speed (1.0×–10.0×, default 5.0×). Speed goes back when Rush is cancelled or the fight ends.
 
 The toggles are saved in `Mods\P3R_FastForward\settings.txt`.
 

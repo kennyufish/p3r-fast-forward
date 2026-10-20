@@ -90,9 +90,9 @@ local function writeSettingsFile()
     end)
     if ok then lastSettingsText = text else log("settings.txt write failed: " .. tostring(err)) end
 end
--- RUSH: when enabled, Tab in battle (the game's own auto-battle key) forces cfg.rushrate until Tab again or the battle
--- ends; cfg.rate is untouched.
-local rush, rushToggled = false, false
+-- RUSH: when enabled, the game's own Rush auto-battle forces cfg.rushrate until Rush is cancelled or the fight ends;
+-- cfg.rate is untouched. Rush is read from the game, so any key or gamepad button works.
+local rush = false
 local function effectiveRate() return rush and cfg.rushrate or cfg.rate end
 -- Dilation this mod may have set; anything else is game-owned slow motion (see applyDilation).
 local function isOurRate(value) return isRate(value) or math.abs(value - cfg.rushrate) <= 0.001 end
@@ -110,6 +110,21 @@ local function valid(object) return object ~= nil and object:IsValid() end
 local function inBattle() return valid(FindFirstOf("BP_BtlPhaseFighting_C")) end
 local RUSH_END_POLLS = 2 -- consecutive misses before RUSH ends, in case the phase actor blinks between turns (unverified)
 local rushMisses = 0
+-- The Rush HUD's IsRushMode flips with the game's Rush, whichever key or button started it (read-only field diff,
+-- 2026-10-19; BtlGuiRushEffect.bEffectEnable moves with it). Never call battle UFunctions blindly: BtlManager:CheckInRush()
+-- with no arguments errored and the game crashed 90 s later (coreclr.dll 0xc0000602).
+local rushReadFailed = false
+local function gameInRush()
+    local hud = FindFirstOf("BP_BtlGuiRush_C")
+    if not valid(hud) then return false end
+    local ok, value = pcall(function() return hud.IsRushMode end)
+    if ok and type(value) == "boolean" then return value end
+    if not rushReadFailed then
+        rushReadFailed = true
+        log("RUSH unavailable: BP_BtlGuiRush_C.IsRushMode unreadable (" .. tostring(value) .. ")")
+    end
+    return false
+end
 -- CRI clamps frequency ratios above MaxPitch (cents) or a pool's max sampling rate.
 local settingsLogged = false
 local function logAudioLimits()
@@ -240,19 +255,23 @@ end
 -- Called ONLY on the game thread. Never retain a world across travel/GC.
 local function reconcile(reason)
     if rush and not cfg.rush then
-        rush, dirty, rushToggled = false, true, false
+        rush, dirty = false, true
         log("RUSH disabled in settings: back to " .. string.format("%.1fx", cfg.rate))
-    elseif rushToggled then
-        rushToggled = false
-        local battle = cfg.rush and inBattle()
-        if battle or rush then rush, dirty, rushMisses = not rush, true, 0 end
-        log("Tab: RUSH " .. (rush and "on" or "off") .. (cfg.rush and (battle and "" or " (no battle)") or " (disabled)"))
-    elseif rush then
-        rushMisses = inBattle() and 0 or rushMisses + 1
-    end
-    if rush and rushMisses >= RUSH_END_POLLS then
-        rush, dirty, rushMisses = false, true, 0
-        log("Battle ended: RUSH off, back to " .. string.format("%.1fx", cfg.rate))
+    elseif cfg.rush then
+        local fighting = inBattle()
+        if fighting and gameInRush() then
+            rushMisses = 0
+            if not rush then
+                rush, dirty = true, true
+                log(string.format("RUSH on: %.1fx", cfg.rushrate))
+            end
+        elseif rush then
+            rushMisses = rushMisses + 1
+            if rushMisses >= RUSH_END_POLLS then
+                rush, dirty, rushMisses = false, true, 0
+                log(string.format("RUSH off (%s): back to %.1fx", fighting and "Rush cancelled" or "battle ended", cfg.rate))
+            end
+        end
     end
     if not anySpeedUp() and not dirty then return end
     local world, worldSource = resolveWorld()
@@ -322,7 +341,7 @@ local active = false
 local loopOK, loopError = pcall(LoopAsync, 500, function()
     if not active then return true end
     pollSettings()
-    if anySpeedUp() or dirty or rush then schedule("poll/travel") end
+    if anySpeedUp() or dirty or rush or cfg.rush then schedule("poll/travel") end -- cfg.rush: watch for the game's Rush
     return false
 end)
 if not loopOK then log("INIT FAILED: LoopAsync: " .. tostring(loopError)); return end
@@ -340,12 +359,6 @@ end)
 if not keyOK then log("INIT FAILED: F6 registration: " .. tostring(keyError)); return end
 local guiKeyOK, guiKeyError = pcall(RegisterKeyBind, Key.F8, launchGui)
 if not guiKeyOK then log("F8 registration failed (GUI reopen unavailable): " .. tostring(guiKeyError)) end
--- UE4SS key binds do not consume the key, so the game still starts its own Rush.
-local rushKeyOK, rushKeyError = pcall(RegisterKeyBind, Key.TAB, function()
-    rushToggled = true
-    schedule("Tab")
-end)
-if not rushKeyOK then log("Tab registration failed (RUSH unavailable): " .. tostring(rushKeyError)) end
 -- Keep the saved toggles but always boot at 1.0x, as before the GUI existed.
 local _, saved = readSettingsFile()
 if saved then cfg = saved end
@@ -354,5 +367,5 @@ writeSettingsFile()
 active, _G.P3RFF_loaded = true, true
 writeApoPitch(1.0) -- clear compensation left over from a session that exited at 1.5x/2x
 launchGui()
-log("Loaded v0.7.0; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0/10.0, F8 opens GUI, Tab in battle = RUSH; LoopAsync=500ms.")
+log("Loaded v0.7.1; " .. _VERSION .. "; settings=" .. SETTINGS_FILE .. "; F6 cycles 1.0/1.5/2.0/5.0/10.0, F8 opens GUI, game Rush = RUSH speed; LoopAsync=500ms.")
 log("Restore with F6 before disabling. Hot unload unsupported; exit/restart game for reliable cleanup.")

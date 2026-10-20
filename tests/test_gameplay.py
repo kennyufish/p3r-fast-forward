@@ -22,6 +22,7 @@ function FindFirstOf(name)
     assert(onGameThread)
     if name == 'GameViewportClient' and viewportAvailable then return viewport end
     if name == 'BP_BtlPhaseFighting_C' and battle then return battle end
+    if name == 'BP_BtlGuiRush_C' and hud then return hud end
 end
 statics = {valid=true, writes=0}
 function statics:IsValid() return self.valid end
@@ -46,8 +47,10 @@ io.open = function(path, mode)
     return {write=function(_, s) files[path] = s; if path:find('p3r_pitch', 1, true) then apoText = s end end, close=function() end}
 end
 os.execute = function() end -- the mod launches gui.ps1 on load
-Key = {F6=117, F8=119, TAB=9}
+Key = {F6=117, F8=119}
 battle = nil -- live BP_BtlPhaseFighting_C stand-in
+hud = {IsRushMode=false} -- BP_BtlGuiRush_C stand-in; resident in the field too
+function hud:IsValid() return true end
 rack = {attaches=0}
 function rack:IsValid() return true end
 function rack:AttachDspBusSetting() assert(onGameThread); self.attaches = self.attaches + 1 end
@@ -163,32 +166,40 @@ class Gameplay(unittest.TestCase):
             logs = {}; rejectWrite=true; press(); drain(); assert(not hasLog("====="))
         ''')
 
-    def test_rush_forces_5x_in_battle_and_restores_after(self):
+    def test_rush_follows_game_rush_mode_and_restores_after(self):
         self.run_lua('''
             press(); drain(); assert(world.rate == 1.5)
-            keys[Key.TAB](); drain(); assert(world.rate == 1.5) -- no battle: ignored
+            hud.IsRushMode = true; tick(); assert(world.rate == 1.5) -- Rush flag outside a fight: ignored
             battle = {IsValid=function() return true end}
-            keys[Key.TAB](); drain(); assert(world.rate == 5.0)
-            tick(); assert(world.rate == 5.0)
-            keys[Key.TAB](); drain(); assert(world.rate == 1.5) -- Tab again cancels
-            keys[Key.TAB](); drain(); assert(world.rate == 5.0)
+            hud.IsRushMode = false; tick(); assert(world.rate == 1.5)
+            hud.IsRushMode = true; tick(); assert(world.rate == 5.0); assert(hasLog("RUSH on: 5.0x"))
+            hud.IsRushMode = false; tick(); assert(world.rate == 5.0) -- one miss is tolerated
+            hud.IsRushMode = true; tick(); hud.IsRushMode = false; tick(); assert(world.rate == 5.0)
+            tick(); assert(world.rate == 1.5); assert(hasLog("Rush cancelled"))
+            hud.IsRushMode = true; tick(); assert(world.rate == 5.0)
             local fight = battle
-            battle = nil; tick(); assert(world.rate == 5.0) -- one miss: phase actor may blink between turns
+            battle = nil; tick(); assert(world.rate == 5.0) -- phase actor may blink between turns
             battle = fight; tick(); battle = nil; tick(); assert(world.rate == 5.0)
-            tick(); assert(world.rate == 1.5); assert(hasLog("Battle ended"))
+            tick(); assert(world.rate == 1.5); assert(hasLog("battle ended"))
             press(); press(); press(); press(); drain(); assert(world.rate == 1.0)
-            battle = {IsValid=function() return true end}; keys[Key.TAB](); drain(); assert(world.rate == 5.0)
+            battle = fight; tick(); assert(world.rate == 5.0) -- watched even at 1.0x
             battle = nil; tick(); tick(); assert(world.rate == 1.0)
-            local path; for p in pairs(files) do if p:find("settings.txt", 1, true) then path = p end end
-            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=1\\nrushrate=3.5\\n"; tick()
-            battle = {IsValid=function() return true end}; keys[Key.TAB](); drain(); assert(world.rate == 3.5) -- custom RUSH rate
-            tick(); assert(world.rate == 3.5) -- 3.5 is ours, not game-owned slow motion
-            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=0\\nrushrate=3.5\\n"; tick(); assert(world.rate == 1.0) -- disabling ends it
-            keys[Key.TAB](); drain(); assert(world.rate == 1.0); assert(hasLog("(disabled)"))
         ''')
 
-    def test_audio_failure_does_not_block_game_speed(self):
+    def test_rush_custom_rate_disable_and_unreadable_flag(self):
         self.run_lua('''
+            local path; for p in pairs(files) do if p:find("settings.txt", 1, true) then path = p end end
+            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=1\\nrushrate=3.5\\n"; tick()
+            battle = {IsValid=function() return true end}; hud.IsRushMode = true
+            tick(); assert(world.rate == 3.5) -- custom RUSH rate
+            tick(); assert(world.rate == 3.5) -- 3.5 is ours, not game-owned slow motion
+            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=0\\nrushrate=3.5\\n"; tick(); assert(world.rate == 1.0)
+            tick(); assert(world.rate == 1.0) -- disabled: the game's Rush is ignored
+            files[path] = "rate=1.0\\ngame=1\\nsfx=1\\npitch=1\\nrush=1\\nrushrate=3.5\\n"; tick(); assert(world.rate == 3.5)
+            hud.IsRushMode = nil; tick(); tick(); assert(world.rate == 1.0); assert(hasLog("IsRushMode unreadable"))
+        ''')
+
+    def test_audio_failure_does_not_block_game_speed(self):        self.run_lua('''
             local bad = makeComponent(); function bad:SetPitchMultiplier() error("boom") end
             press(); drain(); assert(world.rate == 1.5); assert(hasLog("failed=1"))
         ''')

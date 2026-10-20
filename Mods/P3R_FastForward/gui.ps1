@@ -30,8 +30,8 @@ function New-Check($text, $y) {
 $chkGame = New-Check '加速游戏' 40
 $chkSfx = New-Check '加速声音（语音/音效）' 65
 $chkPitch = New-Check '修正声调（1.5x / 2x）' 90
-# RUSH: Tab in battle switches to this rate until the battle ends; bounds match RUSH_MIN/RUSH_MAX in Scripts/main.lua.
-$chkRush = New-Check 'RUSH（战斗中按 Tab）倍速' 115
+# RUSH: the game's Rush auto-battle switches to this rate until Rush or the fight ends; bounds match RUSH_MIN/RUSH_MAX in Scripts/main.lua.
+$chkRush = New-Check 'RUSH（自动战斗）倍速' 115
 $chkRush.Width = 180
 $numRush = New-Object Windows.Forms.NumericUpDown -Property @{
     Location = '195,113'; Width = 60; Minimum = 1; Maximum = 10; DecimalPlaces = 1; Increment = 0.5; Value = 5
